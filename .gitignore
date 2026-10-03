@@ -1,0 +1,10 @@
+# Секреты и kubeconfig
+kube/
+*.conf
+.env
+
+# Логи и временные файлы
+*.log
+*.bak
+*.tmp
+.DS_Store

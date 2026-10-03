@@ -1,0 +1,9 @@
+grafana:
+  adminPassword: admin
+  service:
+    type: NodePort
+    nodePort: 30300
+prometheus:
+  service:
+    type: NodePort
+    nodePort: 30900
