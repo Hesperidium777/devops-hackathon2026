@@ -7,7 +7,7 @@
 | Компонент | Версия |
 |---|---|
 | Ubuntu Server | 24.04 LTS |
-| Kubernetes (kubeadm) | 1.31.0 |
+| Kubernetes (kubeadm) | 1.31.x |
 | containerd | 1.7+ |
 | Calico | 3.28.0 (`ipipMode: Never`, `natOutgoing: true`) |
 | Envoy Gateway | 1.0.2 |
@@ -35,17 +35,22 @@ Infra        → kube-prometheus-stack → Prometheus (NodePort 30900) → Grafa
 ## Требования к среде
 
 - Ubuntu Server 24.04 LTS, 4 vCPU, 8 GB RAM, 60 GB диска
-- Bridged Adapter, статический IP `192.168.1.6`
-- Свободный IP `192.168.1.240` для MetalLB (вне DHCP-пула роутера)
+- Bridged Adapter, статический IP (пример: `192.168.1.6`)
+- Свободный IP для MetalLB (пример: `192.168.1.240`), вне DHCP-пула роутера
 - Отключённый swap, работающий NTP (chrony)
 - На хосте **отключён VPN** — иначе браузер не откроет локальные сервисы `192.168.x.x`
 
+> ⚠️ **IP-адреса в примерах — `192.168.1.6` и `192.168.1.240`. Замените их на свои.** IP узла передаётся в `make deploy NODE_IP=...`.
+
 ## Установка
 
-### 1. Подготовка ОС
+### Шаг 1. Подготовка ОС
 
 ```bash
-sudo apt-get update && sudo apt-get install -y curl gnupg git make chrony
+sudo apt-get update && sudo apt-get install -y \
+  curl gnupg git make chrony \
+  conntrack socat ebtables ethtool
+
 sudo swapoff -a && sudo sed -i '/ swap / s/^/#/' /etc/fstab
 sudo systemctl enable --now chrony
 sudo chronyc makestep
@@ -64,7 +69,9 @@ EOF
 sudo sysctl --system
 ```
 
-### 2. containerd
+**Пакеты `conntrack socat ebtables ethtool` обязательны** — без `conntrack` `kubeadm init` упадёт.
+
+### Шаг 2. containerd
 
 ```bash
 sudo install -m 0755 -d /etc/apt/keyrings
@@ -82,21 +89,25 @@ sudo sed -i 's/SystemdCgroup = false/SystemdCgroup = true/g' /etc/containerd/con
 sudo systemctl restart containerd && sudo systemctl enable containerd
 ```
 
-### 3. kubeadm / kubelet / kubectl
+### Шаг 3. kubeadm / kubelet / kubectl
 
 ```bash
 sudo mkdir -p /etc/apt/keyrings
+
 curl -fsSL https://pkgs.k8s.io/core:/stable:/v1.31/deb/Release.key | \
   sudo gpg --dearmor -o /etc/apt/keyrings/kubernetes-apt-keyring.gpg
-echo 'deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] \
-https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /' | \
-  sudo tee /etc/apt/sources.list.d/kubernetes.list
+sudo chmod 644 /etc/apt/keyrings/kubernetes-apt-keyring.gpg
+
+# ВАЖНО: одной строкой, без переносов
+sudo tee /etc/apt/sources.list.d/kubernetes.list > /dev/null <<'EOF'
+deb [signed-by=/etc/apt/keyrings/kubernetes-apt-keyring.gpg] https://pkgs.k8s.io/core:/stable:/v1.31/deb/ /
+EOF
 
 sudo apt-get update && sudo apt-get install -y kubelet kubeadm kubectl
 sudo apt-mark hold kubelet kubeadm kubectl
 ```
 
-### 4. Инициализация кластера
+### Шаг 4. Инициализация кластера
 
 ```bash
 sudo kubeadm init \
@@ -112,32 +123,40 @@ kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
 
 > `--pod-network-cidr` должен быть `10.244.0.0/16`, иначе конфликт с домашней сетью `192.168.1.0/24`.
 
-### 5. Calico
+### Шаг 5. Calico
 
 ```bash
 kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
 kubectl wait --for=condition=Ready pods --all -n kube-system --timeout=300s
 
-# Режим без инкапсуляции — обязательно для однонодового кластера
 kubectl patch ippool default-ipv4-ippool --type=merge \
   -p '{"spec":{"ipipMode":"Never","vxlanMode":"Never","natOutgoing":true}}'
 kubectl rollout restart daemonset calico-node -n kube-system
 kubectl rollout status daemonset calico-node -n kube-system
+
+kubectl get nodes   # Ready
 ```
 
-### 6. Helm
+### Шаг 6. Helm
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+helm version
 ```
 
-### 7. Развёртывание проекта
+### Шаг 7. Развёртывание проекта
 
 ```bash
 make deploy
 ```
 
-### 8. Алиас MetalLB (обход Bridged VirtualBox)
+Или с явным IP:
+
+```bash
+make deploy NODE_IP=192.168.1.6 GATEWAY_IP=192.168.1.240
+```
+
+### Шаг 8. Алиас MetalLB (обход Bridged VirtualBox)
 
 В Bridged-режиме MetalLB не может отвечать на ARP для виртуального IP. Назначьте алиас:
 
@@ -183,7 +202,11 @@ kubectl get gatewayclass         # → ACCEPTED: True
 | Prometheus | `http://192.168.1.6:30900` |
 | Grafana | `http://192.168.1.6:30300` (admin / admin) |
 
-Query для проверки Prometheus: `up{job="kubernetes-nodes"}` → `1`.
+Проверка Prometheus:
+```bash
+curl http://192.168.1.6:30900/-/healthy
+# Prometheus Server is Healthy.
+```
 
 Проверка datasources:
 ```bash
@@ -194,7 +217,7 @@ curl -s -u admin:admin http://192.168.1.6:30300/api/datasources | python3 -m jso
 ### Логирование
 
 1. `curl http://192.168.1.240`
-2. Grafana → **Explore** → Loki → диапазон **Last 15 minutes**.
+2. Grafana → **Explore** → Loki → **Last 15 minutes**.
 3. Запрос:
    ```
    {app="nginx"}
@@ -206,13 +229,14 @@ curl -s -u admin:admin http://192.168.1.6:30300/api/datasources | python3 -m jso
 ## Известные ограничения
 
 1. **MetalLB в Bridged VirtualBox** — ARP не проходит для виртуального IP, используется алиас `192.168.1.240/32` на интерфейсе ВМ.
-2. **VPN на хосте должен быть отключён** — иначе браузер не откроет локальные сервисы.
+2. **VPN на хосте должен быть отключён** — иначе браузер не откроет локальные сервисы `192.168.x.x`.
 3. **Loki datasource через ConfigMap** — `additionalDataSources` в Helm ломает Grafana (конфликт `only one datasource per organization can be marked as default`). Используется `manifests/loki-datasource.yaml` с `isDefault: false`, подхватывается через `grafana.sidecar.datasources.enabled=true`.
-4. **`loki-gateway` отключён** (`gateway.enabled=false`) — в однонодовом кластере под не планируется из-за anti-affinity. Promtail и Grafana обращаются к Loki напрямую (`http://loki:3100`).
-5. **`frrk8s` в MetalLB отключён** — не нужен в L2-режиме.
-6. **PersistentVolume не используется** — Grafana с `persistence.enabled=false` (emptyDir).
-7. **`scrapeConfigs` в Promtail** — передаётся как **строка** (`|-`) в `config.snippets.scrapeConfigs`, не как список. Иначе Helm падает с `wrong type for value; expected string; got interface{}`.
-8. **NTP (chrony)** — при сбитом времени Grafana не находит логи в диапазоне. Решение: `chronyc makestep`.
+4. **Loki `persistence.enabled: false`** — при SingleBinary-режиме Loki требует writable-том для `/var/loki`. Настроено через `extraVolumes` (emptyDir) + `securityContext.runAsUser: 0`.
+5. **Prometheus NodePort** — Helm не всегда меняет тип сервиса с `ClusterIP` на `NodePort` при `helm upgrade`. В `Makefile` добавлен `kubectl patch` для принудительной смены.
+6. **`loki-gateway` отключён** — в однонодовом кластере под не планируется из-за anti-affinity. Promtail и Grafana обращаются к Loki напрямую.
+7. **`frrk8s` в MetalLB отключён** — не нужен в L2-режиме.
+8. **NTP (chrony)** — при сбитом времени Grafana не находит логи в диапазоне. Решение: `chronyc makestep` + перезапуск подов.
+9. **Порядок `make deploy`** — Envoy Gateway и monitoring устанавливаются **до** применения `manifests/`, потому что CRD Gateway API появляются только после Envoy Gateway, а namespace `monitoring` — после `kube-prometheus-stack`.
 
 ## Структура репозитория
 
@@ -221,11 +245,17 @@ curl -s -u admin:admin http://192.168.1.6:30300/api/datasources | python3 -m jso
 ├── README.md
 ├── Makefile
 ├── .gitignore
-├── manifests/                 # GatewayClass, Gateway, HTTPRoute, Nginx, Loki datasource
+├── manifests/
+│   ├── gatewayclass.yaml
+│   ├── gateway.yaml
+│   ├── httproute.yaml
+│   ├── nginx-configmap.yaml
+│   ├── nginx-app.yaml
+│   └── loki-datasource.yaml
 ├── helm/
 │   ├── monitoring-values.yaml
 │   ├── loki-values.yaml
-│   ├── promtail-values.yaml   # scrapeConfigs: |- (строка!)
+│   ├── promtail-values.yaml
 │   └── metallb-values.yaml
 ├── metallb/
 │   └── ipaddresspool.yaml
