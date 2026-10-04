@@ -1,3 +1,6 @@
+# helm/promtail-values.yaml
+# Values для grafana/promtail (chart 6.17.1, Promtail 3.5.1)
+
 config:
   clients:
     - url: http://loki:3100/loki/api/v1/push
@@ -22,7 +25,8 @@ config:
         source_labels: [__meta_kubernetes_pod_node_name]
         target_label: node_name
 
-    # ─── scrapeConfigs — как СТРОКА ───
+    # ВАЖНО: scrapeConfigs передаётся СТРОКОЙ через |-,
+    # иначе Helm падает с "wrong type for value; expected string; got interface{}"
     scrapeConfigs: |-
       - job_name: kubernetes-pods
         pipeline_stages:

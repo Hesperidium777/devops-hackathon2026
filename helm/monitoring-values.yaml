@@ -1,25 +1,13 @@
 # helm/monitoring-values.yaml
-# Values для kube-prometheus-stack
-# Проверено на chart 91.9.0
+# Values для kube-prometheus-stack (chart 91.9.0)
 
 grafana:
-  # Пароль admin (используется для входа в UI)
   adminPassword: admin
-
-  # Отключаем PVC — на однонодовом кластере нет StorageClass
   persistence:
     enabled: false
-
-  # NodePort для доступа с хоста
   service:
     type: NodePort
     nodePort: 30300
-
-  # Плагины, которые могут понадобиться
-  plugins:
-    - grafana-piechart-panel
-
-  # Ресурсы — ужимаем, чтобы влезло на 8 GB RAM
   resources:
     requests:
       cpu: 50m
@@ -27,9 +15,6 @@ grafana:
     limits:
       cpu: 200m
       memory: 512Mi
-
-  # Sidecar для datasource — обязателен, чтобы подхватить
-  # ConfigMap manifests/loki-datasource.yaml автоматически
   sidecar:
     datasources:
       enabled: true
@@ -40,12 +25,9 @@ grafana:
       skipTlsVerify: true
 
 prometheus:
-  # NodePort для доступа с хоста
   service:
     type: NodePort
     nodePort: 30900
-
-  # Ресурсы — ужимаем
   prometheusSpec:
     resources:
       requests:
@@ -54,21 +36,15 @@ prometheus:
       limits:
         cpu: 500m
         memory: 1Gi
-
-    # Retention — 7 дней, чтобы не забивать диск
     retention: 7d
     retentionSize: "5GB"
-
-    # Не искать PVC
     storageSpec: {}
 
-# Alertmanager — можно отключить, если не нужен
 alertmanager:
   enabled: true
   service:
     type: ClusterIP
 
-# Node-exporter — оставляем (нужен для метрик нод)
 prometheus-node-exporter:
   resources:
     requests:
@@ -78,7 +54,6 @@ prometheus-node-exporter:
       cpu: 100m
       memory: 128Mi
 
-# Kube-state-metrics — оставляем
 kube-state-metrics:
   resources:
     requests:
