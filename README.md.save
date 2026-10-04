@@ -9,13 +9,12 @@
 | Ubuntu Server | 24.04 LTS |
 | Kubernetes (kubeadm) | 1.31.0 |
 | containerd | 1.7+ |
-| Calico | 3.28.0 (`ipipMode: Never`, `natOutgoing: true`) |
+| Calico | 3.28.0 (`ipipMode: Never`) |
 | Envoy Gateway | 1.0.2 |
 | MetalLB | 0.14.x (L2) |
 | Nginx | 1.27-alpine |
 | kube-prometheus-stack | 91.9.0 |
-| Loki | 3.x |
-| Promtail | 3.5.1 |
+| Loki / Promtail | 3.x / 3.5.1 |
 | Helm | 3.x |
 
 ## Архитектура
@@ -26,19 +25,17 @@
              → HTTPRoute nginx-route
              → Service nginx-svc → Deployment nginx → "Hello World!"
 
-Nginx stdout → Promtail (DaemonSet, /var/log/pods) → Loki → Grafana Explore
+Nginx stdout → Promtail (DaemonSet) → Loki → Grafana (NodePort 30300)
 Infra        → kube-prometheus-stack → Prometheus (NodePort 30900) → Grafana
 ```
-
-**Ресурсы Gateway API:** `GatewayClass eg`, `Gateway my-gateway` (listener HTTP :80), `HTTPRoute nginx-route` (PathPrefix `/` → `nginx-svc:80`).
 
 ## Требования к среде
 
 - Ubuntu Server 24.04 LTS, 4 vCPU, 8 GB RAM, 60 GB диска
 - Bridged Adapter, статический IP `192.168.1.6`
-- Свободный IP `192.168.1.240` для MetalLB (вне DHCP-пула роутера)
+- Свободный IP `192.168.1.240` для MetalLB (вне DHCP-пула)
 - Отключённый swap, работающий NTP (chrony)
-- На хосте **отключён VPN** — иначе браузер не откроет локальные сервисы `192.168.x.x`
+- На хосте **отключён VPN** (иначе браузер не откроет локальные сервисы)
 
 ## Установка
 
@@ -47,8 +44,7 @@ Infra        → kube-prometheus-stack → Prometheus (NodePort 30900) → Grafa
 ```bash
 sudo apt-get update && sudo apt-get install -y curl gnupg git make chrony
 sudo swapoff -a && sudo sed -i '/ swap / s/^/#/' /etc/fstab
-sudo systemctl enable --now chrony
-sudo chronyc makestep
+sudo systemctl enable --now chrony && sudo chronyc makestep
 
 cat <<EOF | sudo tee /etc/modules-load.d/k8s.conf
 overlay
@@ -118,7 +114,6 @@ kubectl taint nodes --all node-role.kubernetes.io/control-plane- || true
 kubectl apply -f https://raw.githubusercontent.com/projectcalico/calico/v3.28.0/manifests/calico.yaml
 kubectl wait --for=condition=Ready pods --all -n kube-system --timeout=300s
 
-# Режим без инкапсуляции — обязательно для однонодового кластера
 kubectl patch ippool default-ipv4-ippool --type=merge \
   -p '{"spec":{"ipipMode":"Never","vxlanMode":"Never","natOutgoing":true}}'
 kubectl rollout restart daemonset calico-node -n kube-system
@@ -139,15 +134,14 @@ make deploy
 
 ### 8. Алиас MetalLB (обход Bridged VirtualBox)
 
-В Bridged-режиме MetalLB не может отвечать на ARP для виртуального IP. Назначьте алиас:
-
 ```bash
 sudo ip addr add 192.168.1.240/32 dev enp0s3
 ```
 
-Для фиксации в `netplan` (`/etc/netplan/01-netcfg.yaml`):
+Для фиксации в netplan:
 
 ```yaml
+# /etc/netplan/01-netcfg.yaml
 network:
   version: 2
   ethernets:
@@ -173,7 +167,6 @@ sudo chmod 600 /etc/netplan/01-netcfg.yaml && sudo netplan apply
 curl http://192.168.1.240        # → Hello World!
 kubectl get gateway              # → PROGRAMMED: True, ADDRESS: 192.168.1.240
 kubectl get httproute            # → ACCEPTED: True
-kubectl get gatewayclass         # → ACCEPTED: True
 ```
 
 ### Мониторинг
@@ -185,34 +178,23 @@ kubectl get gatewayclass         # → ACCEPTED: True
 
 Query для проверки Prometheus: `up{job="kubernetes-nodes"}` → `1`.
 
-Проверка datasources:
-```bash
-curl -s -u admin:admin http://192.168.1.6:30300/api/datasources | python3 -m json.tool
-```
-Должны быть три datasource: `Prometheus`, `Alertmanager`, `Loki`.
-
 ### Логирование
 
 1. `curl http://192.168.1.240`
 2. Grafana → **Explore** → Loki → диапазон **Last 15 minutes**.
-3. Запрос:
-   ```
-   {app="nginx"}
-   ```
-4. Run query.
+3. Запрос: `{app="nginx"}` → Run query.
 
 Должны появиться access-логи Nginx.
 
 ## Известные ограничения
 
-1. **MetalLB в Bridged VirtualBox** — ARP не проходит для виртуального IP, используется алиас `192.168.1.240/32` на интерфейсе ВМ.
+1. **MetalLB в Bridged VirtualBox** — ARP не проходит для виртуального IP, поэтому используется алиас `192.168.1.240/32` на интерфейсе ВМ.
 2. **VPN на хосте должен быть отключён** — иначе браузер не откроет локальные сервисы.
-3. **Loki datasource через ConfigMap** — `additionalDataSources` в Helm ломает Grafana (конфликт `only one datasource per organization can be marked as default`). Используется `manifests/loki-datasource.yaml` с `isDefault: false`, подхватывается через `grafana.sidecar.datasources.enabled=true`.
-4. **`loki-gateway` отключён** (`gateway.enabled=false`) — в однонодовом кластере под не планируется из-за anti-affinity. Promtail и Grafana обращаются к Loki напрямую (`http://loki:3100`).
+3. **Loki datasource через ConfigMap** — `additionalDataSources` в Helm ломает Grafana, поэтому используется отдельный ConfigMap `manifests/loki-datasource.yaml` с `isDefault: false`.
+4. **`loki-gateway` отключён** — в однонодовом кластере под не планируется из-за anti-affinity, а Promtail и Grafana обращаются к Loki напрямую (`http://loki:3100`).
 5. **`frrk8s` в MetalLB отключён** — не нужен в L2-режиме.
-6. **PersistentVolume не используется** — Grafana с `persistence.enabled=false` (emptyDir).
-7. **`scrapeConfigs` в Promtail** — передаётся как **строка** (`|-`) в `config.snippets.scrapeConfigs`, не как список. Иначе Helm падает с `wrong type for value; expected string; got interface{}`.
-8. **NTP (chrony)** — при сбитом времени Grafana не находит логи в диапазоне. Решение: `chronyc makestep`.
+6. **PersistentVolume не используется** — Grafana с `persistence.enabled=false`.
+7. **NTP (chrony)** — при сбитом времени Grafana не находит логи в диапазоне. Решение: `chronyc makestep`.
 
 ## Структура репозитория
 
@@ -221,14 +203,9 @@ curl -s -u admin:admin http://192.168.1.6:30300/api/datasources | python3 -m jso
 ├── README.md
 ├── Makefile
 ├── .gitignore
-├── manifests/                 # GatewayClass, Gateway, HTTPRoute, Nginx, Loki datasource
-├── helm/
-│   ├── monitoring-values.yaml
-│   ├── loki-values.yaml
-│   ├── promtail-values.yaml   # scrapeConfigs: |- (строка!)
-│   └── metallb-values.yaml
-├── metallb/
-│   └── ipaddresspool.yaml
+├── manifests/         # GatewayClass, Gateway, HTTPRoute, Nginx, Loki datasource
+├── helm/              # values для prometheus-stack, loki, promtail, metallb
+├── metallb/           # IPAddressPool + L2Advertisement
 └── docs/
     └── passport.pdf
 ```

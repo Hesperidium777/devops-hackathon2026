@@ -1,7 +1,72 @@
+# helm/loki-values.yaml
+# Values для grafana/loki (Loki 3.x)
+# Проверено на chart 6.17.1
+
+# SingleBinary — один под, идеально для однонодового кластера
+deploymentMode: SingleBinary
+
 loki:
-  persistence:
+  # useTestSchema — обязателен для SingleBinary, иначе чарт падает
+  # с ошибкой "You must provide a schema_config"
+  useTestSchema: true
+
+  # Отключаем auth — для лабораторной работы не нужен
+  auth_enabled: false
+
+  commonConfig:
+    replication_factor: 1
+
+  storage:
+    type: filesystem
+
+  # Отключаем memberlist-join — сервиса нет в SingleBinary-режиме
+  memberlist:
+    service:
+      enabled: false
+
+  # Отключаем телеметрию
+  analytics:
+    reporting_enabled: false
+
+# SingleBinary — один под
+singleBinary:
+  replicas: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+# Отключаем SimpleScalable-компоненты
+backend:
+  replicas: 0
+read:
+  replicas: 0
+write:
+  replicas: 0
+
+# Gateway не нужен: Promtail и Grafana ходят напрямую в loki:3100.
+# В однонодовом кластере gateway не может быть запланирован из-за anti-affinity.
+gateway:
+  enabled: false
+
+# Отключаем self-monitoring — не нужен для задания
+monitoring:
+  selfMonitoring:
     enabled: false
-promtail:
-  enabled: true
-grafana:
+    grafanaAgent:
+      installOperator: false
+  lokiCanary:
+    enabled: false
+
+# Отключаем тесты
+test:
+  enabled: false
+
+# Отключаем кэши — экономим RAM
+chunksCache:
+  enabled: false
+resultsCache:
   enabled: false
